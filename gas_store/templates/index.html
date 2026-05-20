@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>GAS Store (Registry + Search)</title>
+    <title>GAS Store</title>
     <style>
         :root {
             --bg-color: #f5f5f7;
@@ -545,6 +545,69 @@
         .form-status.info    { display: block; background: #eaf3ff; color: #0c5fc7; }
         .form-status.success { display: block; background: #e6f6ec; color: #1f7a3f; }
         .form-status.error   { display: block; background: #fdecec; color: #b3261e; }
+
+        .remote-agent-list {
+            margin-top: 14px;
+            max-height: 420px;
+            overflow-y: auto;
+            padding: 4px;
+        }
+        .remote-agent-list-header {
+            display: flex; align-items: center; justify-content: space-between;
+            padding: 10px 14px;
+            margin-bottom: 10px;
+            border: 1px solid var(--card-border);
+            border-radius: 10px;
+            font-size: 13px; color: var(--text-secondary);
+            background: var(--card-bg);
+            position: sticky; top: 0; z-index: 1;
+        }
+        .remote-agent-list-header .select-all { display: flex; align-items: center; gap: 8px; cursor: pointer; }
+        .remote-agent-grid {
+            display: flex;
+            flex-direction: column;
+            gap: 10px;
+        }
+        .remote-agent-item {
+            display: flex; align-items: flex-start; gap: 10px;
+            padding: 14px;
+            border: 1px solid var(--card-border);
+            border-radius: 12px;
+            background: var(--card-bg);
+            box-shadow: 0 1px 2px rgba(0,0,0,0.04);
+            cursor: pointer;
+            transition: border-color 0.15s ease, box-shadow 0.15s ease, transform 0.05s ease;
+        }
+        .remote-agent-item:hover {
+            border-color: var(--accent-color);
+            box-shadow: 0 2px 8px rgba(0,122,255,0.10);
+        }
+        .remote-agent-item:has(input[type="checkbox"]:checked) {
+            border-color: var(--accent-color);
+            box-shadow: 0 0 0 2px rgba(0,122,255,0.15);
+        }
+        .remote-agent-item input[type="checkbox"] { margin-top: 3px; flex-shrink: 0; }
+        .remote-agent-item .info { flex: 1; min-width: 0; }
+        .remote-agent-item .title-row {
+            display: flex; align-items: baseline; gap: 8px; flex-wrap: wrap;
+            margin-bottom: 4px;
+        }
+        .remote-agent-item .agent-name {
+            font-weight: 600; color: var(--text-primary); font-size: 14px;
+            word-break: break-word;
+        }
+        .remote-agent-item .agent-version {
+            font-size: 11px; color: var(--text-secondary);
+            background: var(--btn-bg); padding: 2px 6px; border-radius: 6px;
+        }
+        .remote-agent-item .agent-desc {
+            margin: 0; font-size: 12.5px; color: var(--text-secondary);
+            line-height: 1.45;
+            display: -webkit-box;
+            -webkit-line-clamp: 4;
+            -webkit-box-orient: vertical;
+            overflow: hidden;
+        }
 
         .empty-state {
             grid-column: 1 / -1;
@@ -1490,8 +1553,10 @@
                             <!-- '<p class="form-hint">The server must allow cross-origin requests (CORS) or be on the same origin as this page.</p>' + -->
                         '</div>' +
                         '<div id="register-status" class="form-status"></div>' +
+                        '<div id="register-agent-list"></div>' +
                         '<div class="form-actions">' +
                             '<button type="button" id="register-cancel" class="secondary-btn">Cancel</button>' +
+                            '<button type="button" id="register-list" class="secondary-btn">List Agents</button>' +
                             '<button type="submit" id="register-submit" class="primary-btn">Register</button>' +
                         '</div>' +
                     '</form>';
@@ -1499,6 +1564,7 @@
                 modalContent.querySelector(".modal-close").addEventListener("click", closeModal);
                 modalContent.querySelector("#register-cancel").addEventListener("click", closeModal);
                 modalContent.querySelector("#register-form").addEventListener("submit", handleRegisterSubmit);
+                modalContent.querySelector("#register-list").addEventListener("click", handleListAgents);
                 modalContent.scrollTop = 0;
                 modalOverlay.classList.add("open");
                 document.body.style.overflow = "hidden";
@@ -1506,6 +1572,126 @@
                     var input = document.getElementById("register-url-input");
                     if (input) { input.focus(); input.select(); }
                 }, 50);
+            }
+
+            function listRemoteAgents(capabilitiesUrl) {
+                return fetch(apiUrl("/api/gas/list-remote"), {
+                    method: "POST",
+                    headers: { "Content-Type": "application/json" },
+                    body: JSON.stringify({ url: capabilitiesUrl })
+                }).then(function(r) {
+                    return r.json().then(function(body) {
+                        if (!r.ok || !body || body.ok === false) {
+                            throw new Error(body && body.error ? body.error : ("HTTP " + r.status));
+                        }
+                        return body; // { ok, agents: [...] }
+                    });
+                });
+            }
+
+            function registerSelected(capabilitiesUrl, names) {
+                return fetch(apiUrl("/api/gas/register-selected"), {
+                    method: "POST",
+                    headers: { "Content-Type": "application/json" },
+                    body: JSON.stringify({ url: capabilitiesUrl, names: names })
+                }).then(function(r) {
+                    return r.json().then(function(body) {
+                        if (!r.ok || !body || body.ok === false) {
+                            throw new Error(body && body.error ? body.error : ("HTTP " + r.status));
+                        }
+                        return body;
+                    });
+                });
+            }
+
+            function renderRemoteAgentList(agents) {
+                var box = document.getElementById("register-agent-list");
+                if (!agents.length) {
+                    box.innerHTML = '<p class="form-hint" style="margin-top:14px;">No agents found at that URL.</p>';
+                    return;
+                }
+                var rows = agents.map(function(a) {
+                    var slug = a.name || "";
+                    var displayName = a.displayName && a.displayName !== slug ? a.displayName : toDisplayTitle(slug);
+                    var version = a.version ? '<span class="agent-version">v' + escapeHtml(a.version) + '</span>' : '';
+                    var desc = a.description ? escapeHtml(a.description) : '<em>No description provided.</em>';
+                    return '<label class="remote-agent-item">' +
+                        '<input type="checkbox" class="remote-agent-cb" value="' + escapeHtml(slug) + '" checked>' +
+                        '<span class="info">' +
+                            '<span class="title-row">' +
+                                '<span class="agent-name">' + escapeHtml(displayName) + '</span>' +
+                                version +
+                            '</span>' +
+                            '<p class="agent-desc">' + desc + '</p>' +
+                        '</span>' +
+                    '</label>';
+                }).join("");
+                box.innerHTML =
+                    '<div class="remote-agent-list">' +
+                        '<div class="remote-agent-list-header">' +
+                            '<label class="select-all">' +
+                                '<input type="checkbox" id="remote-agent-select-all" checked> ' +
+                                'Select all (' + agents.length + ')' +
+                            '</label>' +
+                            '<span id="remote-agent-count">' + agents.length + ' selected</span>' +
+                        '</div>' +
+                        '<div class="remote-agent-grid">' + rows + '</div>' +
+                    '</div>';
+
+                var selectAll = box.querySelector("#remote-agent-select-all");
+                var cbs = box.querySelectorAll(".remote-agent-cb");
+                var countEl = box.querySelector("#remote-agent-count");
+                function updateCount() {
+                    var n = 0;
+                    cbs.forEach(function(cb) { if (cb.checked) n++; });
+                    countEl.textContent = n + " selected";
+                    selectAll.checked = (n === cbs.length);
+                    selectAll.indeterminate = (n > 0 && n < cbs.length);
+                }
+                selectAll.addEventListener("change", function() {
+                    cbs.forEach(function(cb) { cb.checked = selectAll.checked; });
+                    updateCount();
+                });
+                cbs.forEach(function(cb) { cb.addEventListener("change", updateCount); });
+            }
+
+            function getSelectedRemoteNames() {
+                var box = document.getElementById("register-agent-list");
+                if (!box) return null;
+                var cbs = box.querySelectorAll(".remote-agent-cb");
+                if (!cbs.length) return null;
+                var names = [];
+                cbs.forEach(function(cb) { if (cb.checked) names.push(cb.value); });
+                return names;
+            }
+
+            function handleListAgents() {
+                var input = document.getElementById("register-url-input");
+                var statusBox = document.getElementById("register-status");
+                var listBtn = document.getElementById("register-list");
+                var url = (input.value || "").trim();
+                if (!url) {
+                    statusBox.className = "form-status error";
+                    statusBox.textContent = "Please enter a URL.";
+                    return;
+                }
+                statusBox.className = "form-status info";
+                statusBox.textContent = "Fetching agent list from server…";
+                listBtn.disabled = true;
+                listRemoteAgents(url)
+                    .then(function(body) {
+                        var agents = (body && body.agents) || [];
+                        renderRemoteAgentList(agents);
+                        statusBox.className = "form-status success";
+                        statusBox.textContent = "Found " + agents.length + " agent" +
+                            (agents.length === 1 ? "" : "s") +
+                            (agents.length ? " — review and uncheck any you don't want, then click Register." : ".");
+                    })
+                    .catch(function(err) {
+                        statusBox.className = "form-status error";
+                        statusBox.textContent = err && err.message ? err.message : String(err);
+                    })
+                    .then(function() { listBtn.disabled = false; });
             }
 
             function handleRegisterSubmit(e) {
@@ -1520,14 +1706,27 @@
                     return;
                 }
 
+                var selected = getSelectedRemoteNames();
+                if (selected !== null && selected.length === 0) {
+                    statusBox.className = "form-status error";
+                    statusBox.textContent = "Select at least one agent to register.";
+                    return;
+                }
+
                 statusBox.className = "form-status info";
                 statusBox.textContent = "Fetching capabilities…";
                 submitBtn.disabled = true;
                 input.disabled = true;
 
-                statusBox.textContent = "Registering agents into the database…";
+                statusBox.textContent = selected
+                    ? "Registering " + selected.length + " selected agent" + (selected.length === 1 ? "" : "s") + "…"
+                    : "Registering agents into the database…";
 
-                registerToDatabase(url)
+                var registerPromise = selected
+                    ? registerSelected(url, selected)
+                    : registerToDatabase(url);
+
+                registerPromise
                     .then(function(res) {
                         // Agents are now in the DB; refresh the catalog from
                         // our local DB-backed capabilities to show new cards.

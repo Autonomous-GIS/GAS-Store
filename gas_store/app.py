@@ -112,6 +112,13 @@ def gas_search():
 
     where = []
     params = []
+    
+    _FIELD_MAP = {
+    "name": ["name"],
+    "keywords": ["keywords"],
+    "skills": ["skill_names", "skill_descriptions"]
+    }
+    
 
     if q:
         like = f"%{q}%"
@@ -187,3 +194,68 @@ def gas_search():
             for n in names
         ],
     )
+@app.route("/store/api/gas/list-remote", methods=["GET", "POST"])
+def gas_list_remote():
+    """
+    List all agents from remote GAS servers url
+    """
+    data = request.get_json(silent=True) or {}
+    url = (data.get("url") or request.args.get("url") or "").strip()
+    if not url:
+        return jsonify(ok=False, error="Missing 'url'."), 400
+    base_url = url.split("?", 1)[0].strip() or url
+    try:
+        agents = gas_store.get_capabilities(base_url=base_url)
+    except Exception as exc:
+        return jsonify(ok=False, error="List failed: %s" % exc), 502
+
+    enriched = []
+    for a in agents:
+        name = a.get("name")
+        item = {
+            "name": name,
+            "describeUrl": a.get("describeUrl"),
+            "displayName": "",
+            "description": "",
+            "version": "",
+        }
+        try:
+            detail = gas_store.describe_agent(name, base_url=base_url)
+            profile = (detail or {}).get("profile") or {}
+            item["displayName"] = profile.get("name") or ""
+            item["description"] = profile.get("description") or ""
+            item["version"] = profile.get("version") or ""
+        except Exception:
+            pass
+        enriched.append(item)
+    return jsonify(ok=True, agents=enriched)
+
+
+@app.route("/store/api/gas/register-selected")
+def gas_register_selected():
+    """Register a selected subset of a remote server's agents.
+    """
+    data = request.get_json(silent=True) or {}
+    url = (data.get("url") or "").strip()
+    names = data.get("names") or []
+    if not url:
+        return jsonify(ok=False, error="Missing 'url'."), 400
+    if not isinstance(names, list) or not names:
+        return jsonify(ok=False, error="Missing 'names'."), 400
+    base_url = url.split("?", 1)[0].strip() or url
+    registered = []
+    errors = []
+    for name in names:
+        try:
+            gas_store.save_agent_to_db(name, db_path=DB_PATH, base_url=base_url)
+            registered.append(name)
+        except Exception as exc:
+            errors.append({"name": name, "error": str(exc)})
+    if errors and not registered:
+        return jsonify(ok=False, error="Registration failed", details=errors), 502
+    return jsonify(ok=True, registered=registered, count=len(registered),
+                   errors=errors)
+
+
+
+    
